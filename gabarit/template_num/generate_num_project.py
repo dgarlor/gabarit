@@ -22,7 +22,7 @@ import argparse
 import tempfile
 import configparser
 from typing import Union
-from shutil import copyfile, rmtree
+from shutil import copyfile, rmtree, rmtree
 from distutils.dir_util import copy_tree
 from jinja2 import Environment, FileSystemLoader
 
@@ -87,13 +87,12 @@ def generate(project_name: str, project_path: str, config_path: str,
     def get_config(config, section, key, fallback=None):
         value = config.get(section, key, fallback=fallback)
         return value if value != '' else None
-
-    default_sep = get_config(config, 'files', 'csv_sep')
-    default_encoding = get_config(config, 'files', 'encoding')
-    pip_trusted_host = get_config(config, 'pip', 'trusted-host')
-    pip_index_url = get_config(config, 'pip', 'index-url')
-    mlflow_tracking_uri = get_config(config, 'mlflow', 'tracking_uri')
-    additional_pip_packages = get_config(config, 'packages', 'additional_pip_packages')
+    default_sep = get_config(config, 'files', 'csv_sep', fallback=None)
+    default_encoding = get_config(config, 'files', 'encoding', fallback=None)
+    pip_trusted_host = get_config(config, 'pip', 'trusted-host', fallback=None)
+    pip_index_url = get_config(config, 'pip', 'index-url', fallback=None)
+    mlflow_tracking_uri = get_config(config, 'mlflow', 'tracking_uri', fallback='')
+    additional_pip_packages = get_config(config, 'packages', 'additional_pip_packages', fallback=None)
     dvc_config_ok = True if dvc_config_path is not None else False
 
     # Prevent mlflow_tracking_uri to be set to "None" in training script
