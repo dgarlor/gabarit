@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+# Copyright (C) <2018-2022>  <Agence Data Services, DSI Pôle Emploi>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+# Libs unittest
+import unittest
+
+# Utils libs
+import os
+import shutil
+import mlflow
+
+from {{package_name}}.monitoring.model_logger import ModelLogger
+
+# Disable logging
+import logging
+logging.disable(logging.CRITICAL)
+
+TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+
+class ModelLoggerTests(unittest.TestCase):
+    '''Main class to test model_logger'''
+    
+    @classmethod
+    def setUpClass(cls):
+        mlruns = os.path.join(TEST_DIR, "mlruns")
+
+        if os.path.exists(mlruns):
+            shutil.rmtree(mlruns)
+
+        mlflow.set_tracking_uri(f"file://{mlruns}")
+        
+
+    def test_model_logger_init(self):
+        '''Test of the initialization of {{package_name}}.monitoring.model_logger.ModelLogger'''
+        experiment_name = 'test_model_logger_init'
+
+        model = ModelLogger(experiment_name=experiment_name)
+        self.assertEqual(model.experiment_name, experiment_name)
+
+    def test_model_logger_stop_run(self):
+        '''Test of {{package_name}}.monitoring.model_logger.ModelLogger.stop_run'''
+        experiment_name = 'test_model_logger_stop_run'
+        model = ModelLogger(experiment_name=experiment_name)
+
+        # We activate a run via a log
+        model.log_param('stop', 'toto')
+
+        # Use of stop_run
+        model.stop_run()
+
+        # Check
+        self.assertEqual(mlflow.active_run(), None)
+
+    def test_model_logger_log_metric(self):
+        '''Test of {{package_name}}.monitoring.model_logger.ModelLogger.log_metric'''
+        experiment_name = 'test_model_logger_log_metric'
+        model = ModelLogger(experiment_name=experiment_name)
+
+        # Nominal case
+        model.log_metric('test', 5)
+        model.log_metric('test', 5, step=2)
+
+        # Clear
+        model.stop_run()
+
+    def test_model_logger_log_metrics(self):
+        '''Test of {{package_name}}.monitoring.model_logger.ModelLogger.log_metrics'''
+        experiment_name = 'test_model_logger_log_metrics'
+        model = ModelLogger(experiment_name=experiment_name)
+
+        # Nominal case
+        model.log_metrics({'test': 5})
+        model.log_metrics({'test': 5}, step=2)
+
+    def test_model_logger_log_param(self):
+        '''Test of {{package_name}}.monitoring.model_logger.ModelLogger.log_param'''
+        experiment_name = 'test_model_logger_log_param'
+        model = ModelLogger(experiment_name=experiment_name)
+
+        # Nominal case
+        model.log_param('test', 5)
+
+    def test_model_logger_log_params(self):
+        '''Test of {{package_name}}.monitoring.model_logger.ModelLogger.log_params'''    
+        experiment_name = 'test_model_logger_log_params'
+        model = ModelLogger(experiment_name=experiment_name)
+
+        # Nominal case
+        model.log_params({'test': 5})
+
+    def test_model_logger_set_tag(self):
+        '''Test of {{package_name}}.monitoring.model_logger.ModelLogger.set_tag'''
+        experiment_name = 'test_model_logger_set_tag'
+        model = ModelLogger(experiment_name=experiment_name)
+
+        # Nominal case
+        model.set_tag('test', 5)
+
+    def test_model_logger_set_tags(self):
+        '''Test of {{package_name}}.monitoring.model_logger.ModelLogger.set_tags'''
+        experiment_name = 'test_model_logger_set_tags'
+        model = ModelLogger(experiment_name=experiment_name)
+
+        # Nominal case
+        model.set_tags({'test': 5})
+
+
+# Perform tests
+if __name__ == '__main__':
+    # Start tests
+    unittest.main()

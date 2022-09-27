@@ -177,8 +177,8 @@ class ModelClass:
         raise NotImplementedError("'inverse_transform' needs to be overridden")
 
     def get_and_save_metrics(self, y_true, y_pred, df_x: Union[pd.DataFrame, None] = None,
-                             series_to_add: Union[List[pd.Series], None] = None,
-                             type_data: str = '') -> pd.DataFrame:
+                             series_to_add: Union[List[pd.Series], None] = None, type_data: str = ''
+                            ) -> pd.DataFrame:
         '''Gets and saves the metrics of a model
 
         Args:

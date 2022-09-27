@@ -278,38 +278,20 @@ def main(filename: str, y_col: Union[str, int], excluded_cols: Union[List[Union[
 
     # Get results
     y_pred_train = model.predict(x_train, return_proba=False)
+    # model_logger.set_tag(key='type_metric', value='train')
     df_stats = model.get_and_save_metrics(y_train, y_pred_train, df_x=x_train, series_to_add=series_to_add_train, type_data='train')
     gc.collect()  # In some cases, helps with OOMs
     # Get predictions on valid
     if x_valid is not None:
         y_pred_valid = model.predict(x_valid, return_proba=False)
+        # model_logger.set_tag(key='type_metric', value='valid')
         df_stats = model.get_and_save_metrics(y_valid, y_pred_valid, df_x=x_valid, series_to_add=series_to_add_valid, type_data='valid')
         gc.collect()  # In some cases, helps with OOMs
 
-
-    ##############################################
-    # Logger MLflow
-    ##############################################
-
-    # Logging metrics on MLflow
-    if mlflow_experiment:
-        # Get logger
-        mlflow_logger = MLflowLogger(
-            experiment_name=f"{{package_name}}/{mlflow_experiment}",
-            tracking_uri="{{mlflow_tracking_uri}}",
-        )
-        mlflow_logger.set_tag('model_name', f"{os.path.basename(model.model_dir)}")
-        mlflow_logger.log_df_stats(df_stats)
-        mlflow_logger.log_dict(model.json_dict, "configurations.json")
-        # To log more tags/params, you can use mlflow_logger.set_tag(key, value) or mlflow_logger.log_param(key, value)
-        # Log a sweetviz report
-        report = get_sweetviz_report(df_train=df_train, y_pred_train=y_pred_train, y_col=y_col,
-                                     df_valid=df_valid if filename_valid else None,
-                                     y_pred_valid=y_pred_valid if filename_valid else None)
-        if report:
-            mlflow_logger.log_text(report, "sweetviz_train_valid.html")
-        # Stop MLflow if started
-        mlflow_logger.end_run()
+    # Stop MLflow if started
+    if model_logger is not None:
+        model_logger.log_df_stats(df_stats)
+        model_logger.stop_run()
 
 
 def load_dataset(filename: str, sep: str = '{{default_sep}}', encoding: str = '{{default_encoding}}') -> Tuple[pd.DataFrame, str]:
