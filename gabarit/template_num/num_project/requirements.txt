@@ -35,7 +35,8 @@ altair==4.2.0
 
 # Optionnals - code quality & cie
 mypy==0.971
-types-setuptools==59.8.0
+types-setuptools==65.3.0
+setuptools==59.8.0
 flake8==5.0.4
 black==22.8.0
 isort==5.10.1
