@@ -62,9 +62,9 @@ def find_bias(distribution_score:pd.DataFrame,
 
 def get_fairlens_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: List[str], output_path: str, sep: str, encoding:str):
     '''Instanciates a fl.FairnessScorer and then writes three files in output_path:
-        distributions.png : The distribution with respect to the target for each sensitive attribute's subgroup
-        distribution_score.csv : A table containing the Kolmogorov-Smirnov statistics for each subgroups
-        biased_groups.csv : A sub-table of the one above containing the biased groups only
+        data_distributions.png : The distribution with respect to the target for each sensitive attribute's subgroup
+        data_distribution_score.csv : A table containing the Kolmogorov-Smirnov statistics for each subgroups
+        data_biased_groups.csv : A sub-table of the one above containing the biased groups only
 
     Args:
         data (pd.DataFrame) : The data we want to explore
@@ -79,18 +79,39 @@ def get_fairlens_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: Lis
     # Plots and saves the distributions
     logger.info(f"Calculates distributions graphs")
     fl_scorer.plot_distributions(normalize=True)
-    plt.savefig(os.path.join(output_path, 'distributions.png'))
+    plt.savefig(os.path.join(output_path, 'data_distributions.png'))
     # Calculates and saves the Kolmogorov-Smirnov distances
     logger.info(f"Calculates Kolmogorov-Smirnov distances for each subgroup")
     distribution_score = fl_scorer.distribution_score(p_value=True)
-    distribution_score.to_csv(os.path.join(output_path, 'distribution_score.csv'), sep=sep)
+    distribution_score.to_csv(os.path.join(output_path, 'data_distribution_score.csv'), sep=sep)
     # Filters the distribution_score to keep only biased groups and saves them
     biased_groups = find_bias(distribution_score=distribution_score, 
                               min_proportion=0.01, 
                               min_distance=0.05,
                               max_p_value=0.0001)
-    biased_groups.to_csv(os.path.join(output_path, 'biased_groups.csv'), sep=sep, encoding=encoding)
+    biased_groups.to_csv(os.path.join(output_path, 'data_biased_groups.csv'), sep=sep, encoding=encoding)
 
+
+def get_fairlearn_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: List[str], output_path: str, sep: str, encoding:str):
+    pass
+
+
+def bin_continuous_col(data, col):
+    pass
+
+
+def bin_datetime_col(data, col):
+    pass
+
+
+
+def bin_continuous_sensitive_cols(data:pd.DataFrame, col_target:str, sensitive_cols:List[str]) -> pd.DataFrame:
+    fl_scorer = fl.FairnessScorer(data[sensitive_cols+[col_target]], col_target, sensitive_attrs = sensitive_cols)
+    for attr, attr_dist_type in zip([fl_scorer.sensitive_attrs, fl_scorer.sensitive_distr_types]):
+        if attr_dist_type.value=='continuous':
+            bin_continuous_col(data, attr)
+        if attr_dist_type.value=='datetime':
+            bin_datetime_col(data, attr)
 
 def main(filename:str, col_target:str, sensitive_cols:List[str], output_folder:str, col_pred:Union[None, str]=None, 
          sep: str = '{{default_sep}}', encoding: str = '{{default_encoding}}'):
@@ -109,6 +130,8 @@ def main(filename:str, col_target:str, sensitive_cols:List[str], output_folder:s
     if not os.path.exists(output_path):
         os.makedirs(output_path)
     data, metadata = utils.read_csv(os.path.join(data_path, filename), sep=sep, encoding=encoding)
+    # Bins continuous sensitive attributes
+    bin_continuous_sensitive_cols(data, col_target, sensitive_cols)
     # Gets fairlens metrics ie metrics on fairness of subgroups with respect to the target
     logger.info(f"Gets fairlens metrics")
     get_fairlens_metrics(data=data, col_target=col_target, sensitive_cols=sensitive_cols, output_path=output_path, sep=sep, encoding=encoding)
