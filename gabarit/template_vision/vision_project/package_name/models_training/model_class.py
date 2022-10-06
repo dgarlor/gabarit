@@ -95,7 +95,7 @@ class ModelClass:
         self.nb_fit = 0
 
         # Configuration dict. to be logged. Set on save.
-        self.json_dict: Dict[Any, Any] = {}
+        self.json_dict = {}
 
     def fit(self, df_train, **kwargs) -> dict:
         '''Trains the model
