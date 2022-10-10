@@ -27,8 +27,8 @@ import logging
 import numpy as np
 import pandas as pd
 import dill as pickle
-from typing import Union
 from datetime import datetime
+from typing import Union, Dict, Any
 
 from {{package_name}} import utils
 
@@ -75,10 +75,7 @@ class ModelClass:
         self.model_type = None
 
         # Model name
-        if model_name is None:
-            self.model_name = self._default_name
-        else:
-            self.model_name = model_name
+        self.model_name = self._default_name if model_name is None else model_name
 
         # Model folder
         if model_dir is None:
@@ -96,6 +93,9 @@ class ModelClass:
         # is trained ?
         self.trained = False
         self.nb_fit = 0
+
+        # Configuration dict. to be logged. Set on save.
+        self.json_dict: Dict[Any, Any] = {}
 
     def fit(self, df_train, **kwargs) -> dict:
         '''Trains the model
@@ -142,7 +142,8 @@ class ModelClass:
         '''
         raise NotImplementedError("'inverse_transform' needs to be overridden")
 
-    def get_and_save_metrics(self, y_true, y_pred, list_files_x: Union[list, None] = None, type_data: str = '') -> pd.DataFrame:
+    def get_and_save_metrics(self, y_true, y_pred, list_files_x: Union[list, None] = None,
+                             type_data: str = '') -> pd.DataFrame:
         '''Gets and saves the metrics of a model
 
         Args:

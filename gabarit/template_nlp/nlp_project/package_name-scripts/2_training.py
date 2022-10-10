@@ -36,7 +36,7 @@ from typing import Union, List, Type, Tuple
 
 from {{package_name}} import utils
 from {{package_name}}.preprocessing import preprocess
-from {{package_name}}.monitoring.model_logger import MLflowLogger
+from {{package_name}}.monitoring.mlflow_logger import MLflowLogger
 from {{package_name}}.models_training.model_class import ModelClass
 from {{package_name}}.models_training import (model_tfidf_dense,
                                               model_tfidf_gbt,
@@ -62,8 +62,8 @@ logger = logging.getLogger('{{package_name}}.2_training')
 def main(filename: str, x_col: Union[str, int], y_col: List[Union[str, int]], filename_valid: Union[str, None] = None,
          min_rows: Union[int, None] = None, level_save: str = 'HIGH',
          sep: str = '{{default_sep}}', encoding: str = '{{default_encoding}}',
-         model: Union[Type[ModelClass], None] = None, 
-         mlflow_experiment: Union[str, None]= None) -> None:
+         model: Union[Type[ModelClass], None] = None,
+         mlflow_experiment: Union[str, None] = None) -> None:
     '''Trains a model
 
     Args:
@@ -83,7 +83,7 @@ def main(filename: str, x_col: Union[str, int], y_col: List[Union[str, int]], fi
         sep (str): Separator to use with the .csv files
         encoding (str): Encoding to use with the .csv files
         model (ModelClass): A model to be fitted. This should only be used for testing purposes.
-        mlflow_experiment (str): Name of the current experiment.
+        mlflow_experiment (str): Name of the current experiment. If None, no experiment will be saved.
     Raises:
         ValueError: If level_save value is not a valid option (['LOW', 'MEDIUM', 'HIGH'])
         ValueError: If multi-labels and bad OHE format
@@ -309,16 +309,6 @@ def main(filename: str, x_col: Union[str, int], y_col: List[Union[str, int]], fi
     ##############################################
     # Model metrics
     ##############################################
-    model_logger=None
-    
-    # Logging metrics on MLflow
-    if mlflow_experiment:
-        model_logger = MLflowLogger(
-            experiment_name=f"{{package_name}}/{mlflow_experiment}",
-            tracking_uri="{{mlflow_tracking_uri}}",
-        )
-        model_logger.set_tag('model_name', f"{os.path.basename(model.model_dir)}")
-        # To log more tags/params, you can use model_logger.set_tag(key, value) or model_logger.log_param(key, value)
 
     # Series to add
     cols_to_add: List[pd.Series] = []  # You can add columns to save here
@@ -328,32 +318,39 @@ def main(filename: str, x_col: Union[str, int], y_col: List[Union[str, int]], fi
 
     # Get results
     y_pred_train = model.predict(x_train, return_proba=False)
-    # model_logger.set_tag(key='type_metric', value='train')
     df_stats = model.get_and_save_metrics(y_train, y_pred_train, x=x_train, series_to_add=series_to_add_train, type_data='train')
     gc.collect()  # In some cases, helps with OOMs
     # Get predictions on valid if exists
     if x_valid is not None:
         y_pred_valid = model.predict(x_valid, return_proba=False)
-        # model_logger.set_tag(key='type_metric', value='valid')
         df_stats = model.get_and_save_metrics(y_valid, y_pred_valid, x=x_valid, series_to_add=series_to_add_valid, type_data='valid')
         gc.collect()  # In some cases, helps with OOMs
 
-    # Stop MLflow if started
-    if model_logger is not None:
-        model_logger.log_df_stats(df_stats)
-        model_logger.log_dict(model.json_dict, "configurations.json")
 
-        report = sweetviz_report(
-            df_train=df_train, 
-            df_valid=df_valid if filename_valid else None, 
-            y_col=y_col, 
-            y_pred_train=y_pred_train, 
-            y_pred_valid=y_pred_valid if filename_valid else None
+    ##############################################
+    # Logger MLflow
+    ##############################################
+
+    # Logging metrics on MLflow
+    if mlflow_experiment:
+        # Get logger
+        mlflow_logger = MLflowLogger(
+            experiment_name=f"{{package_name}}/{mlflow_experiment}",
+            tracking_uri="{{mlflow_tracking_uri}}",
         )
+        # Set model name, save metrics & configurations
+        mlflow_logger.set_tag('model_name', f"{os.path.basename(model.model_dir)}")
+        mlflow_logger.log_df_stats(df_stats)
+        mlflow_logger.log_dict(model.json_dict, "configurations.json")
+        # To log more tags/params, you can use mlflow_logger.set_tag(key, value) or mlflow_logger.log_param(key, value)
+        # Log a sweetviz report
+        report = get_sweetviz_report(df_train=df_train, y_pred_train=y_pred_train, y_col=y_col,
+                                     df_valid=df_valid if filename_valid else None,
+                                     y_pred_valid=y_pred_valid if filename_valid else None)
         if report:
-            model_logger.log_text(report, "sweetviz_train_valid.html")
-
-        model_logger.stop_run()
+            mlflow_logger.log_text(report, "sweetviz_train_valid.html")
+        # Stop MLflow if started
+        mlflow_logger.end_run()
 
 
 def load_dataset(filename: str, sep: str = '{{default_sep}}', encoding: str = '{{default_encoding}}') -> Tuple[pd.DataFrame, str]:
@@ -391,26 +388,25 @@ def load_dataset(filename: str, sep: str = '{{default_sep}}', encoding: str = '{
     # Return
     return df, preprocess_str
 
-def sweetviz_report(
-    df_train: pd.DataFrame, 
-    df_valid: pd.DataFrame,
-    y_col: Union[str, List[str]],
-    y_pred_train: np.ndarray,
-    y_pred_valid: np.ndarray,
-) -> str:
+
+def get_sweetviz_report(df_train: pd.DataFrame, y_pred_train: np.ndarray, y_col: Union[str, List[str]],
+                        df_valid: Union[pd.DataFrame, None], y_pred_valid: Union[np.ndarray, None]) -> str:
     '''Generate a sweetviz report that can be logged into MLflow
 
     Args:
         df_train (pd.DataFrame): Training data
-        df_valid (pd.DataFrame): Validation data
-        y_col (Union[str, List[str]]): Target(s) column(s)
         y_pred_train (np.ndarray): Model predictions on training data
+        y_col (str | list<str>): Target(s) column(s)
+        df_valid (pd.DataFrame): Validation data
         y_pred_valid (np.ndarray): Model predictions on validation data
-
     Returns:
         str: A HTML sweetviz report
     '''
-    # Desactivate tqdm and import sweetviz
+    logger.info("Producing a sweetviz report ...")
+
+    # SweetViz add too much logs to be use in production
+    # https://github.com/fbdesignpro/sweetviz/issues/124
+    # Deactivate tqdm and import sweetviz
     try:
         from tqdm import tqdm
         tqdm.__init__ = partialmethod(tqdm.__init__, disable=True)
@@ -423,54 +419,52 @@ def sweetviz_report(
     except ImportError:
         return None
 
-    if isinstance(y_col, str):
-        y_col = [y_col]
-
-    # Add predictions to training data
-    if y_pred_train is not None:
-        # If there is not as much columns in y_col as in y_pred_train
-        # it could be that y_pred_train returns probabilities of each
-        # class so we have to create names to add it to df_train
-        n_targets = y_pred_train.shape[1] if len(y_pred_train.shape) > 1 else 1
-
-        if len(y_col) != n_targets:
-            n_labels = y_pred_train.shape[1] // len(y_col)
-            y_col_names = [
-                "_".join(("pred", col)) for col in y_col for l in range(n_labels) 
-            ]
-        else:
-            y_col_names = ["_".join(("pred", col)) for col in y_col]
-            
-
-        df_train.loc[:, y_col_names] = y_pred_train
-    
+    # Add predictions to our datasets
+    # First, get new columns name
+    y_col_names = [f"pred_{col}" for col in y_col] if isinstance(y_col, list) else [f"pred_{y_col}"]
+    # Add predictions to train data
+    df_train.loc[:, y_col_names] = y_pred_train
     # Add predictions to validation data
     if df_valid is not None and y_pred_valid is not None:
         df_valid.loc[:, y_col_names] = y_pred_valid
 
+    # Try to specify target feature. That could fail due to the fact that sweetviz
+    # can not handle multiple target columns and all possible target types.
+    if isinstance(y_col, str):
+        target = y_col
+        # IF only 0 & 1 in string, cast target column to int
+        if sorted(df_train[target].unique()) == ['0', '1']:
+            df_train[target] = df_train[target].astype(int)
+            if df_valid is not None:
+                df_valid[target] = df_valid[target].astype(int)
+    else:
+        target = None
+    # Prepare SweetViz datasets
     train_data = [df_train, "Training data"]
     valid_data = [df_valid, "Validation data"] if df_valid is not None else None
 
-    # Try to specify target feature. That could fail due to the fact that sweetviz
-    # can not handle multiple target columns and all possible target types
-    if len(y_col) == 1:
-        target = y_col[0]
-    else:
-        target = None
-        
-    try:
-        report: sweetviz.DataframeReport = sweetviz.compare(
-            train_data, valid_data, target_feat=target, pairwise_analysis="off"
-        )
-    except (KeyError, ValueError):
-        report: sweetviz.DataframeReport = sweetviz.compare(
-            train_data, valid_data, pairwise_analysis="off"
-        )
+    # Get sweetviz report
+    # Strategy : if target not None, try to get report with target
+    # If it fails, or if target is None, backup without target
+    # pairwise_analysis must be set to off, otherwise takes far too much time
+    get_report_without_target = True
+    report: sweetviz.DataframeReport
+    if target is not None:
+        try:
+            report = sweetviz.compare(train_data, valid_data, target_feat=target, pairwise_analysis="off")
+            get_report_without_target = False  # No need to get report without target
+        except (KeyError, ValueError):
+            logger.info("Can't produce a sweetviz report with 'target_feat'. Proceeding without this option.")
+    if get_report_without_target:
+        report = sweetviz.compare(train_data, valid_data, pairwise_analysis="off")
 
-    with tempfile.TemporaryDirectory() as tmpdirname:
-        tmpfile = os.path.join(tmpdirname, "report.html")
-        report.show_html(tmpfile, open_browser=False, layout="vertical")
+    # We need to call show_html in order to get _page_html
+    # Hence, we'll do it on a temp file
+    with tempfile.TemporaryDirectory() as tmp_dirname:
+        tmp_file = os.path.join(tmp_dirname, "report.html")
+        report.show_html(tmp_file, open_browser=False, layout="vertical")
 
+    # Return html code as string
     return report._page_html
 
 

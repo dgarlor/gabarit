@@ -23,9 +23,12 @@
 import os
 import math
 import mlflow
+import pathlib
 import logging
 import pandas as pd
 from typing import Union
+
+from {{package_name}} import utils
 
 # Deactivation of GIT warning for mlflow
 os.environ["GIT_PYTHON_REFRESH"] = "quiet"
@@ -33,7 +36,7 @@ os.environ["GIT_PYTHON_REFRESH"] = "quiet"
 class MLflowLogger:
     '''Abstracts how MlFlow works'''
 
-    def __init__(self, experiment_name: str, tracking_uri: Union[str, None] = None) -> None:
+    def __init__(self, experiment_name: str, tracking_uri: str = '') -> None:
         '''Class initialization
         Args:
             experiment_name (str):  Name of the experiment to activate
@@ -43,15 +46,19 @@ class MLflowLogger:
         # Get logger
         self.logger = logging.getLogger(__name__)
 
+        # Backup to local save if no uri (i.e. empty string)
+        if tracking_uri == '':
+            tracking_uri = pathlib.Path(os.path.join(utils.get_data_path(), 'experiments', 'mlruns')).as_uri()
         # Set tracking URI & experiment name
-        if tracking_uri:
-            self.tracking_uri = tracking_uri
-
+        self.tracking_uri = tracking_uri
+        # No need to set_tracking_uri, this is done through the setter decorator
         self.experiment_name = experiment_name
-
-        mlflow.set_experiment(experiment_name)
-
-        self.logger.info(f'Ml Flow running, metrics available @ {self.tracking_uri}')
+        try:
+            mlflow.set_experiment(experiment_name)
+        except Exception as e:
+            self.logger.error(repr(e))
+            raise ConnectionError(f"Can't reach MLflow at {self.tracking_uri}. Please check the URI.")
+        self.logger.info(f'MLflow running, metrics available @ {self.tracking_uri}')
 
     @property
     def tracking_uri(self) -> str:
@@ -63,8 +70,8 @@ class MLflowLogger:
         '''Set tracking uri'''
         mlflow.set_tracking_uri(uri)
 
-    def stop_run(self) -> None:
-        '''Stop an MLflow run'''
+    def end_run(self) -> None:
+        '''Stops an MLflow run'''
         try:
             mlflow.end_run()
         except Exception:
@@ -156,15 +163,23 @@ class MLflowLogger:
         Returns:
             bool: If key is a valid mlflow key
         '''
-        return mlflow.mlflow.utils.validation._VALID_PARAM_AND_METRIC_NAMES.match(key)
+        if mlflow.mlflow.utils.validation._VALID_PARAM_AND_METRIC_NAMES.match(key):
+            return True
+        else:
+            return False
 
-    def log_df_stats(self, df_stats:pd.DataFrame) -> None:
+    def log_df_stats(self, df_stats: pd.DataFrame, label_col: str = 'Label') -> None:
         '''Log a dataframe containing metrics from a training
-        
+
         Args:
             df_stats (pd.Dataframe): Dataframe containing metrics from a training
+        Kwargs:
+            label_col (str): default labelc column name
         '''
-        label_col = 'Label'
+        if label_col not in df_stats.columns:
+            raise ValueError(f"The provided label column name ({label_col}) not found in df_stats' columns.")
+
+        # Get metrics columns
         metrics_columns = [col for col in df_stats.columns if col != label_col]
 
         # Log labels
@@ -175,17 +190,22 @@ class MLflowLogger:
         # Log metrics
         ml_flow_metrics = {}
         for i, row in df_stats.iterrows():
-            for c in metrics_columns:
-                metric_key = f"{row[label_col]} --- {c}"
+            for j, col in enumerate(metrics_columns):
+                metric_key = f"{row[label_col]} --- {col}"
                 # Check that mlflow accepts the key, otherwise, replace it
+                # TODO: could be improved ...
                 if not self.valid_name(metric_key):
-                    metric_key = f"Label {i} --- {c}"
-                ml_flow_metrics[metric_key] = row[c]
+                    metric_key = f"Label {i} --- {col}"
+                if not self.valid_name(metric_key):
+                    metric_key = f"{row[label_col]} --- Col {j}"
+                if not self.valid_name(metric_key):
+                    metric_key = f"Label {i} --- Col {j}"
+                ml_flow_metrics[metric_key] = row[col]
 
         # Log metrics
         self.log_metrics(ml_flow_metrics)
 
-    def log_dict(self, dictionary:dict, artifact_file: str) -> None:
+    def log_dict(self, dictionary: dict, artifact_file: str) -> None:
         '''Logs a dictionary as an artifact in MLflow
 
         Args:
@@ -194,7 +214,7 @@ class MLflowLogger:
         '''
         mlflow.log_dict(dictionary=dictionary, artifact_file=artifact_file)
 
-    def log_text(self, text:str, artifact_file: str) -> None:
+    def log_text(self, text: str, artifact_file: str) -> None:
         '''Logs a text as an artifact in MLflow
 
         Args:
@@ -202,6 +222,7 @@ class MLflowLogger:
             artifact_file (str): The run-relative artifact file path in posixpath format to which the dictionary is saved
         '''
         mlflow.log_text(text=text, artifact_file=artifact_file)
+
 
 if __name__ == '__main__':
     logger = logging.getLogger(__name__)

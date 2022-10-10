@@ -35,7 +35,7 @@ from typing import Type, Union
 from {{package_name}} import utils
 from {{package_name}}.preprocessing import preprocess
 from {{package_name}}.models_training import utils_models
-from {{package_name}}.monitoring.model_logger import MLflowLogger
+from {{package_name}}.monitoring.mlflow_logger import MLflowLogger
 from {{package_name}}.models_training.model_class import ModelClass
 from {{package_name}}.models_training.object_detectors import (model_keras_faster_rcnn,
                                                                model_detectron_faster_rcnn)
@@ -50,7 +50,8 @@ logger = logging.getLogger('{{package_name}}.2_training_object_detector')
 
 def main(directory: str, directory_valid: str = None, level_save: str = 'HIGH',
          sep: str = '{{default_sep}}', encoding: str = '{{default_encoding}}',
-         model: Type[ModelClass] = None, mlflow_experiment: Union[str, None]= None) -> None:
+         model: Union[Type[ModelClass], None] = None,
+         mlflow_experiment: Union[str, None] = None) -> None:
     '''Trains a model
 
     Args:
@@ -64,7 +65,7 @@ def main(directory: str, directory_valid: str = None, level_save: str = 'HIGH',
         sep (str): Separator to use with the .csv files
         encoding (str): Encoding to use with the .csv files
         model (ModelClass): A model to be fitted. This should only be used for testing purposes.
-        mlflow_experiment (str): Name of the current experiment.
+        mlflow_experiment (str): Name of the current experiment. If None, no experiment will be saved.
     Raises:
         ValueError: If level_save value is not a valid option (['LOW', 'MEDIUM', 'HIGH'])
         FileNotFoundError: If the directory does not exists in {{package_name}}-data
@@ -193,34 +194,36 @@ def main(directory: str, directory_valid: str = None, level_save: str = 'HIGH',
     ##############################################
     # Model metrics
     ##############################################
-    model_logger=None
-    
-    # Logging metrics on MLflow
-    if mlflow_experiment:
-        model_logger = MLflowLogger(
-            experiment_name=f"{{package_name}}/{mlflow_experiment}",
-            tracking_uri="{{mlflow_tracking_uri}}",
-        )
-        model_logger.set_tag('model_name', f"{os.path.basename(model.model_dir)}")
-        # To log more tags/params, you can use model_logger.set_tag(key, value) or model_logger.log_param(key, value)
 
     # Get results
     y_pred_train = model.predict(df_train)
-    # model_logger.set_tag(key='type_metric', value='train')
     df_stats = model.get_and_save_metrics(bboxes_list, y_pred_train, list_files_x=path_list, type_data='train')
     gc.collect()  # In some cases, helps with OOMs
     # Get predictions on valid
     if df_valid is not None:
         y_pred_valid = model.predict(df_valid)
-        # model_logger.set_tag(key='type_metric', value='valid')
         df_stats = model.get_and_save_metrics(bboxes_list_valid, y_pred_valid, list_files_x=path_list_valid, type_data='valid')
         gc.collect()  # In some cases, helps with OOMs
 
-    # Stop MLflow if started
-    if model_logger is not None:
-        model_logger.log_df_stats(df_stats)
-        model_logger.log_dict(model.json_dict, "configurations.json")
-        model_logger.stop_run()
+
+    ##############################################
+    # Logger MLflow
+    ##############################################
+
+    # Logging metrics on MLflow
+    if mlflow_experiment:
+        # Get logger
+        mlflow_logger = MLflowLogger(
+            experiment_name=f"{{package_name}}/{mlflow_experiment}",
+            tracking_uri="{{mlflow_tracking_uri}}",
+        )
+        # Set model name, save metrics & configurations
+        mlflow_logger.set_tag('model_name', f"{os.path.basename(model.model_dir)}")
+        mlflow_logger.log_df_stats(df_stats)
+        mlflow_logger.log_dict(model.json_dict, "configurations.json")
+        # To log more tags/params, you can use mlflow_logger.set_tag(key, value) or mlflow_logger.log_param(key, value)
+        # Stop MLflow if started
+        mlflow_logger.end_run()
 
 
 if __name__ == '__main__':
