@@ -21,6 +21,7 @@
 import os
 import json
 import logging
+import datetime
 import argparse
 import pandas as pd
 import fairlens as fl
@@ -28,6 +29,7 @@ from pathlib import Path
 from itertools import product
 import matplotlib.pyplot as plt
 from typing import List, Union, Tuple
+from fairlens import utils as fl_utils
 
 from {{package_name}} import utils
 
@@ -96,24 +98,200 @@ def get_fairlearn_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: Li
     pass
 
 
-def bin_continuous_col(data, col):
-    pass
+def get_next_date(date:pd.Timestamp, step:str) -> datetime.datetime:
+    '''Gives the 'next' date according to a step. For example, if we are the 24th of March 2021, the 'next' date with a step
+    'year' is the 1st of January 2022, with a step 'month', it is the 1st of April 2021, with a step 'day', it is the 25th of 
+    March 2021...
+    
+    Args:
+        date (pd.Timestamp): The date to consider
+        step (str) : The step to consider (in ['year', 'month', 'day', 'hour', 'minute', 'second'])
+    Returns:
+        (datetime.datetime) : The next date to consider
+
+    '''
+    if step == 'year':
+        new_date = date.replace(day=1)+datetime.timedelta(days=366)
+        new_date = datetime.datetime(new_date.year, 1, 1)
+    if step == 'month':
+        new_date = date.replace(day=1)+datetime.timedelta(days=32)
+        new_date = datetime.datetime(new_date.year, new_date.month, 1)
+    if step == 'day':
+        new_date = date.replace(hour=0)+datetime.timedelta(seconds=86401)
+        new_date = datetime.datetime(new_date.year, new_date.month, new_date.day)
+    if step == 'hour':
+        new_date = date.replace(minute=0)+datetime.timedelta(seconds=3601)
+        new_date = datetime.datetime(new_date.year, new_date.month, new_date.day, new_date.hour)
+    if step == 'minute':
+        new_date = date.replace(second=0)+datetime.timedelta(seconds=61)
+        new_date = datetime.datetime(new_date.year, new_date.month, new_date.day, new_date.hour, new_date.minute)
+    if step == 'second':
+        new_date = date+datetime.timedelta(seconds=1)
+        new_date = datetime.datetime(new_date.year, new_date.month, new_date.day, new_date.hour, new_date.minute, new_date.second)
+    return new_date
 
 
-def bin_datetime_col(data, col):
-    pass
+def get_previous_date(date: pd.Timestamp, step: str) -> datetime.datetime:
+    '''Gives the 'previous' date according to a step. For example, if we are the 24th of March 2021, the 'previous' date with a step
+    'year' is the 1st of January 2021, with a step 'month', it is the 1st of March 2021, with a step 'day', it is the 24th of 
+    March 2021...
+
+    Args:
+        date (pd.Timestamp): The date to consider
+        step (str) : The step to consider (in ['year', 'month', 'day', 'hour', 'minute', 'second'])
+    Returns:
+        (datetime.datetime) : The previous date to consider
+    '''
+    if step == 'year':
+        new_date = datetime.datetime(date.year, 1, 1)
+    if step == 'month':
+        new_date = datetime.datetime(date.year, date.month, 1)
+    if step == 'day':
+        new_date = datetime.datetime(date.year, date.month, date.day)
+    if step == 'hour':
+        new_date = datetime.datetime(date.year, date.month, date.day, date.hour)
+    if step == 'minute':
+        new_date = datetime.datetime(date.year, date.month, date.day, date.hour, date.minute)
+    return new_date
+    
+
+def get_labels_from_bins(bins: List[pd.Timestamp], step:str) -> List[str]:
+    '''Gives a list of labels corresponding to the name of the bins
+    
+    Args:
+        bins (List[pd.Timestamp]) : The limits to the bins (as given by a pd.qcut for example)
+        step (str) : The step to consider (in ['year', 'month', 'day', 'hour', 'minute', 'second'])
+    Returns:
+        List[str] : A list of labels to name the bins
+    '''
+    # The list of the dates for the left limits of the bins
+    list_begin_date = bins[:-1]
+    # The list of the dates for the right limits of the bins
+    if step != 'second':
+        list_end_date = [get_previous_date(date-datetime.timedelta(seconds=1), step) for date in bins[1:]]
+    else:
+        list_end_date = [date-datetime.timedelta(seconds=1) for date in bins[1:-1]]+[bins[-1]]
+    date_format = ''
+    list_steps = ['year', 'month', 'day', 'hour', 'minute', 'second']
+    list_format = ['/%Y', '/%m', '/%d', '|%H', ':%M', ':%S']
+    # Max step to consider (ie the 'precision' we want)
+    max_index = list_steps.index(step)+1
+    # Checks if we already added something to the date_format (in order not to 'hop' over a step)
+    test_begin = False
+    # We loop on the possible steps and add it to the date_format if necessary
+    for attribute, split_format in zip(list_steps[:max_index], list_format[:max_index]):
+        if not len({getattr(date, attribute) for date in list_begin_date+list_end_date})==1 or test_begin:
+            test_begin = True
+            if date_format == '':
+                date_format += split_format[1:]
+            else:
+                date_format += split_format
+    # Now that the date_format as been calculated, actually transforms the limits in str
+    labels = []
+    for date_begin, date_end in zip(list_begin_date, list_end_date):
+        label_begin = date_begin.strftime(date_format)
+        label_end = date_end.strftime(date_format)
+        if label_begin == label_end:
+            labels.append(label_begin)
+        else:
+            labels.append(label_begin+'-'+label_end)
+    return labels
 
 
+def rebin_date_column(date_column: pd.Series, date_bins:List[pd.Timestamp], ratio_min: float=1/2) -> pd.Series:
+    '''Bins the date_column in a more 'natural' way than with date_bins so that the resulting categories are given
+    as readable strings.
 
-def bin_continuous_sensitive_cols(data:pd.DataFrame, col_target:str, sensitive_cols:List[str]) -> pd.DataFrame:
-    fl_scorer = fl.FairnessScorer(data[sensitive_cols+[col_target]], col_target, sensitive_attrs = sensitive_cols)
-    for attr, attr_dist_type in zip([fl_scorer.sensitive_attrs, fl_scorer.sensitive_distr_types]):
-        if attr_dist_type.value=='continuous':
-            bin_continuous_col(data, attr)
-        if attr_dist_type.value=='datetime':
-            bin_datetime_col(data, attr)
+    Args:
+        date_column (pd.Series) : The column to bin
+        date_bins (List[pd.Timestamp]) : The limits to the bins (as given by a pd.qcut for example)
+        ratio_min (float) : The minimum ratio wanted between the less populated category over the most populated
+    Returns:
+        pd.Series : The binned column
+    '''
+    # For each 'step' ie 'precision'
+    for step in ['year', 'month', 'day', 'hour', 'minute']:
+        # Gets new 'natural' bins and sees if they verify the ratio requirement
+        new_bins = [get_previous_date(date_bins[0], step)]+[get_next_date(date, step) for date in date_bins[1:]]
+        if len(set(new_bins)) == len(date_bins):
+            labels = get_labels_from_bins(new_bins, step)
+            new_col, test_ratio = check_sufficient_balance(date_column, new_bins, labels=labels, ratio_min=ratio_min)
+            if test_ratio:
+                return new_col
+        # Another way to get new 'natural' bins
+        new_bins = [get_previous_date(date_bins[0], step)]+[get_next_date(date, step)-datetime.timedelta(seconds=1) for date in date_bins[1:-1]]+[get_next_date(date_bins[-1], step)]
+        if len(set(new_bins)) == len(date_bins):
+            labels = get_labels_from_bins(new_bins, step)
+            new_col, test_ratio = check_sufficient_balance(date_column, new_bins, labels=labels, ratio_min=ratio_min)
+            if test_ratio:
+                return new_col
+    # Can't find more 'natural' bins
+    labels = get_labels_from_bins(date_bins, 'second')
+    return pd.cut(date_column, bins=date_bins, labels=labels, include_lowest=True)
 
-def main(filename:str, col_target:str, sensitive_cols:List[str], output_folder:str, col_pred:Union[None, str]=None, 
+
+def check_sufficient_balance(date_column: pd.Series, new_bins: List[pd.Timestamp], labels: List[str], 
+                             ratio_min: float) -> Tuple[pd.Series, bool]:
+    '''Checks if the categories are balanced
+    
+    Args:
+        date_column (pd.Series) : The column to bin
+        date_bins (List[pd.Timestamp]) : The limits to the bins (as given by a pd.qcut for example)
+        labels (List[str]) : The names to give to the bins
+        ratio_min (float) : The minimum ratio wanted between the less populated category over the most populated
+    Returns:
+        pd.Series : The binned column
+        bool : If the ratio condition is satisfied
+    '''
+    new_col = pd.cut(date_column, bins=new_bins, labels=labels, include_lowest=True)
+    count = new_col.value_counts()
+    ratio = min(count)/max(count)
+    return new_col, ratio>=ratio_min
+
+
+def bin_datetime_col(data: pd.DataFrame, col: str, nb_bins: int) -> pd.Series:
+    '''Bins a date column in nb_bins
+
+    Args:
+        data (pd.DataFrame) : The dataset we consider
+        col (str) : The name of the date column to bin
+        nb_bins (int) : Number of bins we want
+    Returns:
+        pd.Series : The binned column
+    
+    '''
+    if data[col].nunique() <= nb_bins:
+        return data[col].copy()
+    new_col = data[col].apply(lambda x:x.timestamp())
+    _, bins = pd.qcut(new_col, nb_bins, duplicates="drop", retbins=True)
+    date_bins = [datetime.datetime.utcfromtimestamp(time) for time in bins]
+    new_col = rebin_date_column(data[col], date_bins)
+    return new_col
+
+
+def normalize_data(data: pd.DataFrame, sensitive_cols:List[str], nb_bins: int=10) -> pd.DataFrame:
+    '''Casts each sensitive col in a suitable dtype and bins them
+
+    Args:
+        data (pd.DataFrame) : The dataframe whose columns we want to cast
+        sensitive_cols (List[str]) : The list of the columns containing sensitive attributes (eg. sex, age, ethnicity,...)
+        nb_bins (int) : The number of bins to consider when binning a datetime or continuous column
+    Returns:
+        pd.DataFrame : The dataframe with the columns casted and binned
+    
+    '''
+    new_data = data.copy()
+    for col in sensitive_cols:
+        new_data[col] = fl_utils.infer_dtype(new_data[col])
+        distr_type = fl_utils.infer_distr_type(new_data[col])
+        if distr_type.value=='continuous':
+            new_data[col] = fl_utils._bin_as_string(new_data[col], 'continuous', max_bins=nb_bins)
+        elif distr_type.value=='datetime':
+            new_data[col] = bin_datetime_col(new_data, col, nb_bins)
+    return new_data
+
+
+def main(filename:str, col_target:str, sensitive_cols:List[str], output_folder:str, nb_bins: Union[int, str]=10,col_pred:Union[None, str]=None, 
          sep: str = '{{default_sep}}', encoding: str = '{{default_encoding}}'):
     '''
 
@@ -125,13 +303,14 @@ def main(filename:str, col_target:str, sensitive_cols:List[str], output_folder:s
         encoding (str): Encoding to use with the .csv files
     '''
     logger.info(f"Loading data")
+    nb_bins = int(nb_bins)
     data_path = utils.get_data_path()
     output_path = os.path.join(data_path, output_folder)
     if not os.path.exists(output_path):
         os.makedirs(output_path)
     data, metadata = utils.read_csv(os.path.join(data_path, filename), sep=sep, encoding=encoding)
-    # Bins continuous sensitive attributes
-    bin_continuous_sensitive_cols(data, col_target, sensitive_cols)
+    logger.info(f"Preprocesses data")
+    data = normalize_data(data, sensitive_cols, nb_bins)
     # Gets fairlens metrics ie metrics on fairness of subgroups with respect to the target
     logger.info(f"Gets fairlens metrics")
     get_fairlens_metrics(data=data, col_target=col_target, sensitive_cols=sensitive_cols, output_path=output_path, sep=sep, encoding=encoding)
@@ -145,9 +324,10 @@ if __name__ == "__main__":
     parser.add_argument('-t', '--target', required=True, help="The name of the column containing the target")
     parser.add_argument('-s', '--sensitive_cols', required=True, nargs='+', help="The names of the columns containing sensitive attributes (eg. sex, age, ethnicity,...)")
     parser.add_argument('-o', '--output_folder', required=True, help="The name of the output folder")
+    parser.add_argument('-n', '--nb_bins', default=10, help="The number of bins to consider when binning continuous or date column")
     parser.add_argument('-p', '--col_pred', default=None, help="The column containing the predictions of a model")
     parser.add_argument('--sep', default='{{default_sep}}', help="Separator to use with the .csv files.")
     parser.add_argument('--encoding', default='{{default_encoding}}', help="Encoding to use with the .csv files.")
     args = parser.parse_args()
     main(filename=args.filename, col_target=args.target, sensitive_cols=args.sensitive_cols, 
-         col_pred=args.col_pred, output_folder=args.output_folder, sep=args.sep, encoding=args.encoding)
+         col_pred=args.col_pred, nb_bins=args.nb_bins, output_folder=args.output_folder, sep=args.sep, encoding=args.encoding)
