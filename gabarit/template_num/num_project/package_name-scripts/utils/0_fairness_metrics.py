@@ -19,14 +19,13 @@
 
 
 import os
-import json
 import logging
 import datetime
 import argparse
+import sklearn
+import fairlearn
 import pandas as pd
 import fairlens as fl
-from pathlib import Path
-from itertools import product
 import matplotlib.pyplot as plt
 from typing import List, Union, Tuple
 from fairlens import utils as fl_utils
@@ -92,6 +91,40 @@ def get_fairlens_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: Lis
                               min_distance=0.05,
                               max_p_value=0.0001)
     biased_groups.to_csv(os.path.join(output_path, 'data_biased_groups.csv'), sep=sep, encoding=encoding)
+
+
+def get_metrics_functions(data_col):
+    distr_type = fl_utils.infer_distr_type(data_col)
+    metrics_functions = {"count":fairlearn.metrics.count}
+    if distr_type.value == 'binary':
+        metrics_functions['accuracy'] = sklearn.metrics.accuracy_score
+        metrics_functions['precision'] = partial(sklearn.metrics.precision_score, zero_division=0)
+        metrics_functions['false_positive_rate'] = fairlearn.metrics.false_positive_rate
+        metrics_functions['false_negative_rate'] = fairlearn.metrics.false_negative_rate
+        metrics_functions['f1_score'] = partial(sklearn.metrics.f1_score, zero_division=0)
+    if distr_type.value == 'categorical':
+        metrics_functions['f1_score_weighted'] = partial(sklearn.metrics.f1_score, average='weighted', zero_division=0)
+        metrics_functions['f1_score_macro'] = partial(sklearn.metrics.f1_score, average='macro', zero_division=0)
+        metrics_functions['precision_weighted'] = partial(sklearn.metrics.precision_score, average='weighted', zero_division=0)
+        metrics_functions['precision_macro'] = partial(sklearn.metrics.precision_score, average='macro', zero_division=0)
+        metrics_functions['accuracy'] = sklearn.metrics.accuracy_score
+    if distr_type.value == 'continuous':
+        metrics_functions["mean_absolute_value"] = sklearn.metrics.mean_absolute_error
+        metrics_functions["root_mean_squared_error"] = partial(sklearn.metrics.mean_squared_error, squared=False)
+        metrics_functions["mean_absolute_percentage_error"] = sklearn.metrics.mean_absolute_percentage_error
+        metrics_functions['R_squared'] = sklearn.metrics.r2_score
+    return metrics_functions
+
+
+def get_metrics_target_pred(data, target, pred, sensitive_features):
+    metrics_functions = get_metrics_functions(data[target])
+    mf = fairlearn.metrics.MetricFrame(
+        metrics=metrics_functions,
+        y_true=data[target],
+        y_pred=data[pred],
+        sensitive_features=data[sensitive_features]
+        )
+    return mf.by_group
 
 
 def get_fairlearn_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: List[str], output_path: str, sep: str, encoding:str):
@@ -314,6 +347,7 @@ def main(filename:str, col_target:str, sensitive_cols:List[str], output_folder:s
     # Gets fairlens metrics ie metrics on fairness of subgroups with respect to the target
     logger.info(f"Gets fairlens metrics")
     get_fairlens_metrics(data=data, col_target=col_target, sensitive_cols=sensitive_cols, output_path=output_path, sep=sep, encoding=encoding)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser('fairness_metrics', description=(
