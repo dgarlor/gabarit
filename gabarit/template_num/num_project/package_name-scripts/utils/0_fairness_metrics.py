@@ -24,8 +24,11 @@ import datetime
 import argparse
 import sklearn
 import fairlearn
+import matplotlib
 import pandas as pd
 import fairlens as fl
+import fairlearn.metrics
+from functools import partial
 import matplotlib.pyplot as plt
 from typing import List, Union, Tuple
 from fairlens import utils as fl_utils
@@ -61,7 +64,8 @@ def find_bias(distribution_score:pd.DataFrame,
     return biased_groups
 
 
-def get_fairlens_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: List[str], output_path: str, sep: str, encoding:str):
+def get_fairlens_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: List[str], output_path: str, 
+                            sep: str, encoding:str):
     '''Instanciates a fl.FairnessScorer and then writes three files in output_path:
         data_distributions.png : The distribution with respect to the target for each sensitive attribute's subgroup
         data_distribution_score.csv : A table containing the Kolmogorov-Smirnov statistics for each subgroups
@@ -80,7 +84,7 @@ def get_fairlens_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: Lis
     # Plots and saves the distributions
     logger.info(f"Calculates distributions graphs")
     fl_scorer.plot_distributions(normalize=True)
-    plt.savefig(os.path.join(output_path, 'data_distributions.png'))
+    plt.savefig(os.path.join(output_path, 'data_distributions.png'), bbox_inches="tight")
     # Calculates and saves the Kolmogorov-Smirnov distances
     logger.info(f"Calculates Kolmogorov-Smirnov distances for each subgroup")
     distribution_score = fl_scorer.distribution_score(p_value=True)
@@ -93,7 +97,14 @@ def get_fairlens_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: Lis
     biased_groups.to_csv(os.path.join(output_path, 'data_biased_groups.csv'), sep=sep, encoding=encoding)
 
 
-def get_metrics_functions(data_col):
+def get_metrics_functions(data_col: pd.Series)-> dict:
+    '''Gets the metrics to calculate using the target and the prediction
+    
+    Args:
+        data_col (pd.Series) : The data on which we want to infer the metrics
+    Returns:
+        dict : the dictionary containing the metrics to calculate between the target and the predictions
+    '''
     distr_type = fl_utils.infer_distr_type(data_col)
     metrics_functions = {"count":fairlearn.metrics.count}
     if distr_type.value == 'binary':
@@ -116,19 +127,114 @@ def get_metrics_functions(data_col):
     return metrics_functions
 
 
-def get_metrics_target_pred(data, target, pred, sensitive_features):
-    metrics_functions = get_metrics_functions(data[target])
+def get_metric_frame(data:pd.DataFrame, col_target:str, col_pred:str, sensitive_cols:List[str]) -> fairlearn.metrics.MetricFrame:
+    '''Get the fairlearn MetricFrame.
+
+    Args:
+        data (pd.DataFrame) : The data
+        col_target (str) : The name of the target column
+        col_pred (str) : The name of the column containing the predictions
+    Returns:
+        fairlearn.metrics.MetricFrame : The corresponding MetricFrame
+    
+    '''
+    metrics_functions = get_metrics_functions(data[col_target])
     mf = fairlearn.metrics.MetricFrame(
         metrics=metrics_functions,
-        y_true=data[target],
-        y_pred=data[pred],
-        sensitive_features=data[sensitive_features]
+        y_true=data[col_target],
+        y_pred=data[col_pred],
+        sensitive_features=data[sensitive_cols]
         )
-    return mf.by_group
+    return mf
 
 
-def get_fairlearn_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: List[str], output_path: str, sep: str, encoding:str):
-    pass
+def plot_count(df_metrics:pd.DataFrame) -> matplotlib.axes._axes.Axes:
+    '''Plots the count pie from a df_metrics obtained from a MetricFrame
+
+    Args:
+        df_metrics (pd.DataFrame) : The dataframe containing a column count and the indices corresponding to the groups
+    Returns:
+        matplotlib.axes._axes.Axes : The matplotlib axes for the figure
+    
+    '''
+    fig = df_metrics[['count']].plot(kind="pie",
+                         subplots=True,
+                         layout=[1,1],
+                         legend=False,
+                         figsize=[12,8],
+                         title='Size of each sensitive subgroup')
+    ax = fig[0][0]
+    return ax
+
+
+def plot_one_metric(df_metrics:pd.DataFrame, metric_name:str) -> matplotlib.axes._axes.Axes:
+    '''Plots the bar graph for the chosen metric.
+
+    Args:
+        df_metrics (pd.DataFrame) : The dataframe containing a column with the metric for each group
+        metric_name (str) : The name of the chosen metric
+    Returns:
+        matplotlib.axes._axes.Axes : The matplotlib axes for the figure
+    
+    '''
+    ordered_df = df_metrics[[metric_name]].sort_values(metric_name)
+    index_overall = list(ordered_df.index).index(('overall',)*len(df_metrics.index[0]))
+    fig = ordered_df.plot(kind="bar",
+                         subplots=True,
+                         layout=[1,1],
+                         legend=False,
+                         figsize=[12,8],
+                         title=metric_name+' for each sensitive subgroup')
+    ax = fig[0][0]
+    for i, patch in enumerate(ax.patches):
+        if i==index_overall:
+            patch.set_color('orange')
+    return ax
+
+
+def get_and_save_metrics_graphs(metric_frame: fairlearn.metrics.MetricFrame, output_path:str) -> pd.DataFrame:
+    '''Saves the graphs given a metric_frame and returns the dataframe used to obtain them.
+
+    Args:
+        metric_frame (fairlearn.metrics.MetricFrame) : The MetricFrame from which we want to plot the graphs
+        output_path (str) : The path where to save the plots
+    Returns:
+        pd.DataFrame : The dataframe used to plot the graphs
+    
+    '''
+    df_metrics = metric_frame.by_group
+    ax_count = plot_count(df_metrics)
+    ax_count.figure.savefig(os.path.join(output_path, 'fairness_count_groups.png'), bbox_inches="tight")
+    nb_level_index = len(df_metrics.index[0])
+    df_overall =  pd.DataFrame(metric_frame._overall).T
+    df_overall.index = pd.MultiIndex.from_arrays([['overall']]*nb_level_index, names=df_metrics.index.names)
+    df_metrics = pd.concat([df_metrics, df_overall])
+    for metric in df_metrics.columns:
+        if metric != 'count':
+            ax = plot_one_metric(df_metrics, metric)
+            ax.figure.savefig(os.path.join(output_path, 'fairness_algo_barplot_'+metric+'.png'), bbox_inches="tight")
+    return df_metrics
+
+
+def get_fairlearn_metrics(data:pd.DataFrame, col_target: str, col_pred: str, sensitive_cols: List[str], 
+                         output_path:str, sep:str, encoding:str) -> None:
+    '''Gets the fairlearn metrics and writes the corresponding plots and dataframes.
+
+    Args:
+        data (pd.DataFrame) : The dataframe we want to explore
+        col_target (str) : The name of the target column
+        col_pred (str) : The name of the column containing the predictions
+        sensitive_cols (List[str]) : The list of the columns containing sensitive attributes (eg. sex, age, ethnicity,...)
+        output_path (str) : The path to the folder where the files will be saved
+        sep (str): Separator to use with the .csv files
+        encoding (str): Encoding to use with the .csv files
+    
+    '''
+    logger.info(f"Gets MetricFrame")
+    metric_frame = get_metric_frame(data=data, col_target=col_target, col_pred=col_pred, sensitive_cols=sensitive_cols)
+    logger.info(f"Gets fairlearn metrics plots")
+    df_metrics = get_and_save_metrics_graphs(metric_frame, output_path)
+    df_metrics.to_csv(os.path.join(output_path, 'algo_metrics_by_groups.csv'), sep=sep, encoding=encoding)
 
 
 def get_next_date(date:pd.Timestamp, step:str) -> datetime.datetime:
@@ -324,14 +430,18 @@ def normalize_data(data: pd.DataFrame, sensitive_cols:List[str], nb_bins: int=10
     return new_data
 
 
-def main(filename:str, col_target:str, sensitive_cols:List[str], output_folder:str, nb_bins: Union[int, str]=10,col_pred:Union[None, str]=None, 
-         sep: str = '{{default_sep}}', encoding: str = '{{default_encoding}}'):
+def main(filename:str, col_target:str, sensitive_cols:List[str], output_folder:str, nb_bins: Union[int, str]=10,
+         col_pred:Union[None, str]=None, sep: str = '{{default_sep}}', encoding: str = '{{default_encoding}}'):
     '''
 
     Args:
-        
+        filename (str) : Path to the dataset (actually paths relative to {{package_name}}-data)
+        col_target (str) : The name of the target column in data
+        sensitive_cols (List[str]) : The list of the columns containing sensitive attributes (eg. sex, age, ethnicity,...)
+        output_folder (str) : The path to the folder where the files will be saved
     Kwargs:
-        col_pred
+        col_pred (str) : The name of the column containing the predictions
+        nb_bins (int) : The number of bins to consider when binning a datetime or continuous column
         sep (str): Separator to use with the .csv files
         encoding (str): Encoding to use with the .csv files
     '''
@@ -346,8 +456,13 @@ def main(filename:str, col_target:str, sensitive_cols:List[str], output_folder:s
     data = normalize_data(data, sensitive_cols, nb_bins)
     # Gets fairlens metrics ie metrics on fairness of subgroups with respect to the target
     logger.info(f"Gets fairlens metrics")
-    get_fairlens_metrics(data=data, col_target=col_target, sensitive_cols=sensitive_cols, output_path=output_path, sep=sep, encoding=encoding)
-
+    get_fairlens_metrics(data=data, col_target=col_target, sensitive_cols=sensitive_cols, output_path=output_path, 
+                         sep=sep, encoding=encoding)
+    if col_pred is not None:
+        # Gets fairlearn metrics ie metrics on fairness of subgroups when comparing the target and the predictions
+        logger.info(f"Gets fairlearn metrics")
+        get_fairlearn_metrics(data=data, col_target=col_target, col_pred=col_pred, sensitive_cols=sensitive_cols, 
+                            output_path=output_path, sep=sep, encoding=encoding) 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser('fairness_metrics', description=(
