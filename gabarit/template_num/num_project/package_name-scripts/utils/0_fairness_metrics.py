@@ -34,14 +34,62 @@ from typing import List, Union, Tuple
 from fairlens import utils as fl_utils
 
 from {{package_name}} import utils
+from {{package_name}}.monitoring.mlflow_logger import MLflowLogger
 
 # Get logger
 logger = logging.getLogger("{{package_name}}.0_fairness_metrics.py")
 
-def find_bias(distribution_score:pd.DataFrame, 
-              min_proportion:float, 
-              min_distance:float, 
-              max_p_value:float) -> pd.DataFrame:
+
+def main(filename: str, col_target: str, sensitive_cols: List[str], output_folder: str, nb_bins: int = 10,
+         col_pred: Union[None, str] = None, sep: str = '{{default_sep}}', encoding: str = '{{default_encoding}}',
+         mlflow_experiment: Union[None, str] = None) -> None:
+    '''
+
+    Args:
+        filename (str) : Path to the dataset (actually paths relative to {{package_name}}-data)
+        col_target (str) : The name of the target column in data
+        sensitive_cols (List[str]) : The list of the columns containing sensitive attributes (eg. sex, age, ethnicity,...)
+        output_folder (str) : The path to the folder where the files will be saved
+    Kwargs:
+        col_pred (str) : The name of the column containing the predictions
+        nb_bins (int) : The number of bins to consider when binning a datetime or continuous column
+        sep (str): Separator to use with the .csv files
+        encoding (str): Encoding to use with the .csv files
+        mlflow_experiment (str): Name of the current experiment. If None, no experiment will be saved.
+    '''
+    logger.info(f"Loading data")
+    data_path = utils.get_data_path()
+    output_path = os.path.join(data_path, output_folder)
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
+    data, metadata = utils.read_csv(os.path.join(data_path, filename), sep=sep, encoding=encoding)
+    logger.info(f"Preprocesses data")
+    data = normalize_data(data, sensitive_cols, nb_bins)
+    # Gets fairlens metrics ie metrics on fairness of subgroups with respect to the target
+    logger.info(f"Gets fairlens metrics")
+    if mlflow_experiment:
+        # Get logger
+        mlflow_logger = MLflowLogger(
+            experiment_name=f"{{package_name}}/{mlflow_experiment}",
+            tracking_uri="{{mlflow_tracking_uri}}",
+        )
+    else:
+        mlflow_logger = None
+    get_fairlens_metrics(data=data, col_target=col_target, sensitive_cols=sensitive_cols, output_path=output_path, 
+                         sep=sep, encoding=encoding, mlflow_logger=mlflow_logger)
+    if col_pred is not None:
+        # Gets fairlearn metrics ie metrics on fairness of subgroups when comparing the target and the predictions
+        logger.info(f"Gets fairlearn metrics")
+        get_fairlearn_metrics(data=data, col_target=col_target, col_pred=col_pred, sensitive_cols=sensitive_cols, 
+                            output_path=output_path, sep=sep, encoding=encoding, mlflow_logger=mlflow_logger)
+    if mlflow_logger is not None:
+        mlflow_logger.end_run()
+
+
+def find_bias(distribution_score: pd.DataFrame, 
+              min_proportion: float, 
+              min_distance: float, 
+              max_p_value: float) -> pd.DataFrame:
     '''Gets the biased groups when given a distribution_score dataframe. Actually just filters it 
     on the Proportion, Distance and P-Value columns. Also adds a column number_of_attributes containing
     the number of attributes defining the group.
@@ -64,8 +112,8 @@ def find_bias(distribution_score:pd.DataFrame,
     return biased_groups
 
 
-def get_fairlens_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: List[str], output_path: str, 
-                            sep: str, encoding:str):
+def get_fairlens_metrics(data: pd.DataFrame, col_target: str, sensitive_cols: List[str], output_path: str, 
+                            sep: str, encoding: str, mlflow_logger: Union[None, MLflowLogger] = None) -> None:
     '''Instanciates a fl.FairnessScorer and then writes three files in output_path:
         data_distributions.png : The distribution with respect to the target for each sensitive attribute's subgroup
         data_distribution_score.csv : A table containing the Kolmogorov-Smirnov statistics for each subgroups
@@ -78,15 +126,20 @@ def get_fairlens_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: Lis
         output_path (str) : The path to the folder where the files will be saved
         sep (str): Separator to use with the .csv files
         encoding (str): Encoding to use with the .csv files
+    Kwargs
+        mlflow_logger (MLflowLogger) : The logger to log the metrics in MLflow
     '''
     # Instanciates the fl.FairnessScorer
-    fl_scorer = fl.FairnessScorer(data[sensitive_cols+[col_target]], col_target, sensitive_attrs = sensitive_cols)
+    fl_scorer = fl.FairnessScorer(data[sensitive_cols+[col_target]].copy(), col_target, sensitive_attrs = sensitive_cols)
     # Plots and saves the distributions
     logger.info(f"Calculates distributions graphs")
     fl_scorer.plot_distributions(normalize=True)
+    fig_distributions = plt.gcf()
     plt.savefig(os.path.join(output_path, 'data_distributions.png'), bbox_inches="tight")
     # Calculates and saves the Kolmogorov-Smirnov distances
     logger.info(f"Calculates Kolmogorov-Smirnov distances for each subgroup")
+    for col in fl_scorer.sensitive_attrs:
+        fl_scorer.df[col] = fl_scorer.df[col].apply(lambda x:f'({col}) '+str(x))
     distribution_score = fl_scorer.distribution_score(p_value=True)
     distribution_score.to_csv(os.path.join(output_path, 'data_distribution_score.csv'), sep=sep)
     # Filters the distribution_score to keep only biased groups and saves them
@@ -95,6 +148,10 @@ def get_fairlens_metrics(data:pd.DataFrame, col_target: str, sensitive_cols: Lis
                               min_distance=0.05,
                               max_p_value=0.0001)
     biased_groups.to_csv(os.path.join(output_path, 'data_biased_groups.csv'), sep=sep, encoding=encoding)
+    if mlflow_logger is not None:
+        mlflow_logger.log_figure(fig_distributions, 'data_distributions.png')
+        mlflow_logger.log_dict(distribution_score.to_dict(orient='index'), 'data_distribution_score.json')
+        mlflow_logger.log_dict(biased_groups.to_dict(orient='index'), 'data_biased_groups.json')
 
 
 def get_metrics_functions(data_col: pd.Series)-> dict:
@@ -127,7 +184,8 @@ def get_metrics_functions(data_col: pd.Series)-> dict:
     return metrics_functions
 
 
-def get_metric_frame(data:pd.DataFrame, col_target:str, col_pred:str, sensitive_cols:List[str]) -> fairlearn.metrics.MetricFrame:
+def get_metric_frame(data: pd.DataFrame, col_target: str, col_pred: str, 
+                     sensitive_cols: List[str]) -> fairlearn.metrics.MetricFrame:
     '''Get the fairlearn MetricFrame.
 
     Args:
@@ -148,7 +206,7 @@ def get_metric_frame(data:pd.DataFrame, col_target:str, col_pred:str, sensitive_
     return mf
 
 
-def plot_count(df_metrics:pd.DataFrame) -> matplotlib.axes._axes.Axes:
+def plot_count(df_metrics: pd.DataFrame) -> matplotlib.axes._axes.Axes:
     '''Plots the count pie from a df_metrics obtained from a MetricFrame
 
     Args:
@@ -167,7 +225,7 @@ def plot_count(df_metrics:pd.DataFrame) -> matplotlib.axes._axes.Axes:
     return ax
 
 
-def plot_one_metric(df_metrics:pd.DataFrame, metric_name:str) -> matplotlib.axes._axes.Axes:
+def plot_one_metric(df_metrics: pd.DataFrame, metric_name: str) -> matplotlib.axes._axes.Axes:
     '''Plots the bar graph for the chosen metric.
 
     Args:
@@ -192,14 +250,17 @@ def plot_one_metric(df_metrics:pd.DataFrame, metric_name:str) -> matplotlib.axes
     return ax
 
 
-def get_and_save_metrics_graphs(metric_frame: fairlearn.metrics.MetricFrame, output_path:str) -> pd.DataFrame:
+def get_and_save_metrics_graphs(metric_frame: fairlearn.metrics.MetricFrame, output_path: str, sep: str, encoding: str,
+                                mlflow_logger: Union[None, MLflowLogger] = None) -> None:
     '''Saves the graphs given a metric_frame and returns the dataframe used to obtain them.
 
     Args:
         metric_frame (fairlearn.metrics.MetricFrame) : The MetricFrame from which we want to plot the graphs
         output_path (str) : The path where to save the plots
-    Returns:
-        pd.DataFrame : The dataframe used to plot the graphs
+        sep (str): Separator to use with the .csv files
+        encoding (str): Encoding to use with the .csv files
+    Kwargs:
+        mlflow_logger (MLflowLogger) : The logger to log the metrics in MLflow
     
     '''
     df_metrics = metric_frame.by_group
@@ -212,12 +273,20 @@ def get_and_save_metrics_graphs(metric_frame: fairlearn.metrics.MetricFrame, out
     for metric in df_metrics.columns:
         if metric != 'count':
             ax = plot_one_metric(df_metrics, metric)
-            ax.figure.savefig(os.path.join(output_path, 'fairness_algo_barplot_'+metric+'.png'), bbox_inches="tight")
-    return df_metrics
+            fig = ax.figure
+            fig.tight_layout()
+            fig.savefig(os.path.join(output_path, 'fairness_algo_barplot_'+metric+'.png'), bbox_inches="tight")
+            if mlflow_logger is not None:
+                fig.tight_layout()
+                mlflow_logger.log_figure(fig, 'fairness_algo_barplot_'+metric+'.png')
+    if mlflow_logger is not None:
+        dict_to_mlflow = df_metrics.reset_index().to_dict(orient='index')
+        mlflow_logger.log_dict(dict_to_mlflow, 'algo_metrics_by_groups.json')
+    df_metrics.to_csv(os.path.join(output_path, 'algo_metrics_by_groups.csv'), sep=sep, encoding=encoding)
 
 
-def get_fairlearn_metrics(data:pd.DataFrame, col_target: str, col_pred: str, sensitive_cols: List[str], 
-                         output_path:str, sep:str, encoding:str) -> None:
+def get_fairlearn_metrics(data: pd.DataFrame, col_target: str, col_pred: str, sensitive_cols: List[str], 
+                         output_path: str, sep: str, encoding: str, mlflow_logger: Union[None, MLflowLogger] = None) -> None:
     '''Gets the fairlearn metrics and writes the corresponding plots and dataframes.
 
     Args:
@@ -228,16 +297,17 @@ def get_fairlearn_metrics(data:pd.DataFrame, col_target: str, col_pred: str, sen
         output_path (str) : The path to the folder where the files will be saved
         sep (str): Separator to use with the .csv files
         encoding (str): Encoding to use with the .csv files
-    
+    Kwargs
+        mlflow_logger (MLflowLogger) : The logger to log the metrics in MLflow
     '''
     logger.info(f"Gets MetricFrame")
     metric_frame = get_metric_frame(data=data, col_target=col_target, col_pred=col_pred, sensitive_cols=sensitive_cols)
     logger.info(f"Gets fairlearn metrics plots")
-    df_metrics = get_and_save_metrics_graphs(metric_frame, output_path)
-    df_metrics.to_csv(os.path.join(output_path, 'algo_metrics_by_groups.csv'), sep=sep, encoding=encoding)
+    get_and_save_metrics_graphs(metric_frame, output_path, sep=sep, encoding=encoding, mlflow_logger=mlflow_logger)
+    
 
 
-def get_next_date(date:pd.Timestamp, step:str) -> datetime.datetime:
+def get_next_date(date: pd.Timestamp, step: str) -> datetime.datetime:
     '''Gives the 'next' date according to a step. For example, if we are the 24th of March 2021, the 'next' date with a step
     'year' is the 1st of January 2022, with a step 'month', it is the 1st of April 2021, with a step 'day', it is the 25th of 
     March 2021...
@@ -294,12 +364,13 @@ def get_previous_date(date: pd.Timestamp, step: str) -> datetime.datetime:
     return new_date
     
 
-def get_labels_from_bins(bins: List[pd.Timestamp], step:str) -> List[str]:
+def get_labels_from_bins(bins: List[pd.Timestamp], step: str, prefix_label: str = '') -> List[str]:
     '''Gives a list of labels corresponding to the name of the bins
     
     Args:
         bins (List[pd.Timestamp]) : The limits to the bins (as given by a pd.qcut for example)
         step (str) : The step to consider (in ['year', 'month', 'day', 'hour', 'minute', 'second'])
+        prefix_label (str) : A prefix to add to each label
     Returns:
         List[str] : A list of labels to name the bins
     '''
@@ -334,16 +405,18 @@ def get_labels_from_bins(bins: List[pd.Timestamp], step:str) -> List[str]:
             labels.append(label_begin)
         else:
             labels.append(label_begin+'-'+label_end)
+    labels = [prefix_label+label for label in labels]
     return labels
 
 
-def rebin_date_column(date_column: pd.Series, date_bins:List[pd.Timestamp], ratio_min: float=1/2) -> pd.Series:
+def rebin_date_column(date_column: pd.Series, date_bins: List[pd.Timestamp], prefix_label: str = '', ratio_min: float = 1/2) -> pd.Series:
     '''Bins the date_column in a more 'natural' way than with date_bins so that the resulting categories are given
     as readable strings.
 
     Args:
         date_column (pd.Series) : The column to bin
         date_bins (List[pd.Timestamp]) : The limits to the bins (as given by a pd.qcut for example)
+        prefix_label (str) : A prefix to add to each category label
         ratio_min (float) : The minimum ratio wanted between the less populated category over the most populated
     Returns:
         pd.Series : The binned column
@@ -353,19 +426,19 @@ def rebin_date_column(date_column: pd.Series, date_bins:List[pd.Timestamp], rati
         # Gets new 'natural' bins and sees if they verify the ratio requirement
         new_bins = [get_previous_date(date_bins[0], step)]+[get_next_date(date, step) for date in date_bins[1:]]
         if len(set(new_bins)) == len(date_bins):
-            labels = get_labels_from_bins(new_bins, step)
+            labels = get_labels_from_bins(new_bins, step, prefix_label)
             new_col, test_ratio = check_sufficient_balance(date_column, new_bins, labels=labels, ratio_min=ratio_min)
             if test_ratio:
                 return new_col
         # Another way to get new 'natural' bins
         new_bins = [get_previous_date(date_bins[0], step)]+[get_next_date(date, step)-datetime.timedelta(seconds=1) for date in date_bins[1:-1]]+[get_next_date(date_bins[-1], step)]
         if len(set(new_bins)) == len(date_bins):
-            labels = get_labels_from_bins(new_bins, step)
+            labels = get_labels_from_bins(new_bins, step, prefix_label)
             new_col, test_ratio = check_sufficient_balance(date_column, new_bins, labels=labels, ratio_min=ratio_min)
             if test_ratio:
                 return new_col
     # Can't find more 'natural' bins
-    labels = get_labels_from_bins(date_bins, 'second')
+    labels = get_labels_from_bins(date_bins, 'second', prefix_label)
     return pd.cut(date_column, bins=date_bins, labels=labels, include_lowest=True)
 
 
@@ -404,11 +477,11 @@ def bin_datetime_col(data: pd.DataFrame, col: str, nb_bins: int) -> pd.Series:
     new_col = data[col].apply(lambda x:x.timestamp())
     _, bins = pd.qcut(new_col, nb_bins, duplicates="drop", retbins=True)
     date_bins = [datetime.datetime.utcfromtimestamp(time) for time in bins]
-    new_col = rebin_date_column(data[col], date_bins)
+    new_col = rebin_date_column(date_column=data[col], date_bins=date_bins)
     return new_col
 
 
-def normalize_data(data: pd.DataFrame, sensitive_cols:List[str], nb_bins: int=10) -> pd.DataFrame:
+def normalize_data(data: pd.DataFrame, sensitive_cols: List[str], nb_bins: int = 5) -> pd.DataFrame:
     '''Casts each sensitive col in a suitable dtype and bins them
 
     Args:
@@ -430,40 +503,6 @@ def normalize_data(data: pd.DataFrame, sensitive_cols:List[str], nb_bins: int=10
     return new_data
 
 
-def main(filename:str, col_target:str, sensitive_cols:List[str], output_folder:str, nb_bins: Union[int, str]=10,
-         col_pred:Union[None, str]=None, sep: str = '{{default_sep}}', encoding: str = '{{default_encoding}}'):
-    '''
-
-    Args:
-        filename (str) : Path to the dataset (actually paths relative to {{package_name}}-data)
-        col_target (str) : The name of the target column in data
-        sensitive_cols (List[str]) : The list of the columns containing sensitive attributes (eg. sex, age, ethnicity,...)
-        output_folder (str) : The path to the folder where the files will be saved
-    Kwargs:
-        col_pred (str) : The name of the column containing the predictions
-        nb_bins (int) : The number of bins to consider when binning a datetime or continuous column
-        sep (str): Separator to use with the .csv files
-        encoding (str): Encoding to use with the .csv files
-    '''
-    logger.info(f"Loading data")
-    nb_bins = int(nb_bins)
-    data_path = utils.get_data_path()
-    output_path = os.path.join(data_path, output_folder)
-    if not os.path.exists(output_path):
-        os.makedirs(output_path)
-    data, metadata = utils.read_csv(os.path.join(data_path, filename), sep=sep, encoding=encoding)
-    logger.info(f"Preprocesses data")
-    data = normalize_data(data, sensitive_cols, nb_bins)
-    # Gets fairlens metrics ie metrics on fairness of subgroups with respect to the target
-    logger.info(f"Gets fairlens metrics")
-    get_fairlens_metrics(data=data, col_target=col_target, sensitive_cols=sensitive_cols, output_path=output_path, 
-                         sep=sep, encoding=encoding)
-    if col_pred is not None:
-        # Gets fairlearn metrics ie metrics on fairness of subgroups when comparing the target and the predictions
-        logger.info(f"Gets fairlearn metrics")
-        get_fairlearn_metrics(data=data, col_target=col_target, col_pred=col_pred, sensitive_cols=sensitive_cols, 
-                            output_path=output_path, sep=sep, encoding=encoding) 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser('fairness_metrics', description=(
             "Calculates various metrics for fairness."
@@ -473,10 +512,12 @@ if __name__ == "__main__":
     parser.add_argument('-t', '--target', required=True, help="The name of the column containing the target")
     parser.add_argument('-s', '--sensitive_cols', required=True, nargs='+', help="The names of the columns containing sensitive attributes (eg. sex, age, ethnicity,...)")
     parser.add_argument('-o', '--output_folder', required=True, help="The name of the output folder")
-    parser.add_argument('-n', '--nb_bins', default=10, help="The number of bins to consider when binning continuous or date column")
+    parser.add_argument('-n', '--nb_bins', type=int, default=5, help="The number of bins to consider when binning continuous or date column")
     parser.add_argument('-p', '--col_pred', default=None, help="The column containing the predictions of a model")
     parser.add_argument('--sep', default='{{default_sep}}', help="Separator to use with the .csv files.")
     parser.add_argument('--encoding', default='{{default_encoding}}', help="Encoding to use with the .csv files.")
+    parser.add_argument('--mlflow_experiment', help="Name of the current experiment. MLflow tracking is activated only if fulfilled.")
     args = parser.parse_args()
     main(filename=args.filename, col_target=args.target, sensitive_cols=args.sensitive_cols, 
-         col_pred=args.col_pred, nb_bins=args.nb_bins, output_folder=args.output_folder, sep=args.sep, encoding=args.encoding)
+         col_pred=args.col_pred, nb_bins=args.nb_bins, output_folder=args.output_folder, sep=args.sep, 
+         encoding=args.encoding, mlflow_experiment=args.mlflow_experiment)
