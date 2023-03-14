@@ -84,7 +84,7 @@ def main(filename: str, x_col: Union[str, int], model_dir: str, y_col: Union[Lis
     ##############################################
 
     # Remove preprocessing from dataset (we do not need it anymore)
-    df = df[[col for col in df.columns if col != preprocess_col]]
+    del df[preprocess_col]
 
     # Save result
     logger.info("Saving results ...")
